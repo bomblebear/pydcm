@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D
 import re
-
+from datetime import datetime
 
 class function:
     name = ""
@@ -77,6 +77,8 @@ class calibration(calobject):
         super().__init__(name)
         self.x = axis("")
         self.y = axis("")
+        self.keyword = ""
+        self.distirb = []
 
     def show(self):
         if self.type == "CURVE" or self.type == "MAP" or self.type == "VAL_BLK":
@@ -136,22 +138,35 @@ class dcminfo:
     calobjects = {"functions": functions, "calibrations": calibrations, "axises": axises}
     line_count = 0
     regex = r"(\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\")|(?:[^\\ \t]+)"
-    keywords = {"FESTWERT": "VALUE", "KENNLINIE": "CURVE", "KENNFELD": "MAP"}
+    keywords = {"FESTWERT"  : "VALUE", 
+                "KENNLINIE" : "CURVE", 
+                "KENNFELD"  : "MAP",
+                "GRUPPENKENNFELD"   : "MAP",
+                "GRUPPENKENNLINIE"  : "CURVE",
+                "STUETZSTELLENVERTEILUNG" : "VAL_BLK",
+                "TEXTSTRING" : "TEXT",
+                }
 
-    def __init__(self):
+    def __init__(self,dcmfile=None):
         self.functions = {}
         self.calibrations = {}
         self.axises = {}
         self.calobjects = {"function": self.functions, "calibration": self.calibrations, "axis": self.axises}
+        if dcmfile is not None:
+            self.read(dcmfile)
         return
 
     def addfunction(self, fun):
         # if not fun.name in self.functions.keys():
         self.functions[fun.name] = fun
 
-    def addcalibration(self, cal):
+    def addcalibration(self, calname):
         # if not cal.name in self.calibrations.keys():
-        self.calibrations[cal.name] = cal
+        if calname not in self.calibrations.keys():
+            self.calibrations[calname] = calibration(calname)
+            return self.calibrations[calname]
+        else:
+            return None
 
     def addaxis(self, ax):
         # if not ax.name in self.axises.keys():
@@ -162,7 +177,8 @@ class dcminfo:
         #     if cal.y.name == ax.name:
         #         cal.y = ax
 
-    def getcalobject(self, type, name):
+    def getcalobject(self, name):
+        type = 'calibration'
         if type in self.calobjects.keys() and name in self.calobjects[type].keys():
             return self.calobjects[type][name]
         else:
@@ -192,7 +208,7 @@ class dcminfo:
                 if not line:
                     break
                 line = line.strip()
-                if len(line) == 0 or line.startswith(self.comment_indicator):
+                if len(line) == 0 or (line.startswith(self.comment_indicator) and not line.startswith("*SST")):
                     continue
                 else:
                     txt = self.split(line)
@@ -206,8 +222,11 @@ class dcminfo:
                     elif txt[1] in self.keywords.keys():
                         # calibration block
                         cal = calibration(txt[2])
+                        cal.keyword = txt[1]
                         cal.type = self.keywords[txt[1]]
                         cal.line_start = line_count
+                    elif txt[1].startswith("*SST"):
+                        cal.ditrib.append(line)
                     elif txt[1] == "LANGNAME":
                         cal.description = txt[2]
                     elif txt[1] == "FUNKTION":
@@ -226,6 +245,8 @@ class dcminfo:
                         if len(y_value) > 0:
                             cal.value.append(y_value)
                             y_value = []
+                    elif txt[1] == "TEXT" and cal.type == "STRING":
+                        cali.value.append(txt[2])
                     elif txt[1] == "WERT":
                         if cal.type == "VALUE":
                             cal.value.append(float(txt[2]))
@@ -246,6 +267,67 @@ class dcminfo:
                                                                             len(self.axises)))
             self.line_count = line_count
 
+    def getDCMDefStr(self, calobj):
+        valuelines = []
+        splitlength = 6
+        if calobj.type == "VALUE":
+            assert(len(calobj.value) == 1)
+            valuelines.append(f'   WERT {calobj.value[0]}')
+        elif calobj.type == "CURVE":
+            if calobj.x.value:
+                valuelines += splitGroup('   ST/X', calobj.x.value, splitlength)
+            if calobj.y.value:
+                valuelines += splitGroup('   ST/Y', calobj.y.value, splitlength)
+            if calobj.value:
+                valuelines += splitGroup('   WERT', calobj.value, splitlength)
+        elif calobj.type == "MAP":
+            assert(len(calobj.value) == len(calobj.y.value))
+            assert(len(calobj.value[0]) == len(calobj.x.value))
+            valuelines += splitGroup('   ST/X', calobj.x.value, splitlength)
+            for y_val, val in zip(calobj.y.value, calobj.value):
+                valuelines.append(f'   ST/Y {y_val}')
+                valuelines += splitGroup('   WERT', val, splitlength)
+        else:
+             raise ValueError(f"Type atttibute: {calobj.type} for {calobj.name}")
+
+        deflines = []
+        deflines.append(f'{calobj.keyword} {calobj.name} {str(len(calobj.x.value)) if len(calobj.x.value)>0 else ""} {str(len(calobj.y.value)) if len(calobj.y.value)>0 else ""}')
+        if calobj.type == "CURVE" and calobj.distirb:
+            deflines += calobj.distirb
+        deflines.append(f'   LANGNAME "{calobj.description}"')
+        if calobj.x.value:
+            deflines.append(f'   EINHEIT_X "{calobj.x.unit}"')
+        if calobj.y.value:
+            deflines.append(f'   EINHEIT_Y "{calobj.y.unit}"')
+        if calobj.value:
+            deflines.append(f'   EINHEIT_W "{calobj.unit}"')
+        if calobj.type == "MAP" and calobj.distirb:
+            deflines += calobj.distirb
+        deflines += valuelines
+        deflines.append('END')
+
+        definestr = '\n'.join(deflines)
+        return definestr
+
+    def genDcmFile(self, tgtDCMPath, deflist):
+        with open(tgtDCMPath, 'w', encoding='utf-8') as f:
+            f.write('* encoding="UTF-8"\n')
+            f.write('* DAMOS format')
+            f.write(f' generated by pydcm at time {datetime.now()}\n\n')
+            f.write('KONSERVIERUNG_FORMAT 2.0\n\n')
+            defstr = '\n\n'.join(deflist)
+            f.write(defstr)
+            f.close()
+        print(f'DCM generated: {tgtDCMPath}')
+
+
+def splitGroup(prefix, list, length):
+    lines = []
+    for i in range(0, len(list), length):
+        group = list[i:i+length]
+        line = prefix + ' ' + ' '.join(map(str, group))
+        lines.append(line)
+    return lines
 
 def isDigit(x):
     try:
