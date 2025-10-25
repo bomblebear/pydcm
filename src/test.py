@@ -18,5 +18,25 @@ print(DEMO_CURVE)
 # value=
 # [120.0, 200.0, 320.0, 400.0, 520.0, 600.0, 720.0]
 
-DEMO_MAP_2 = dcm.getcalobject("calibration", "DEMO_MAP_2")
-DEMO_MAP_2.show()
+DEMO_MAP_2 = dcm.getcalobject("DEMO_MAP_2")
+#DEMO_MAP_2.show()
+
+
+
+baseDCMPath = "../data/DEMO.DCM"
+tgtDCMPath = "../data/autoGen.DCM"
+
+deflist = []
+dcm = dcminfo(baseDCMPath)
+
+calobj = dcm.getcalobject('DEMO_CURVE')
+calobj.value = [1,2,3,4,5,6,7]
+deflist.append(dcm.getDCMDefStr(calobj))
+
+calobj = dcm.addcalibration('AddedCalibration')
+calobj.keyword = 'FESTWERT'
+calobj.type = dcm.keywords[calobj.keyword]
+calobj.value = [400]
+deflist.append(dcm.getDCMDefStr(calobj))
+
+dcm.genDcmFile(tgtDCMPath, deflist)
